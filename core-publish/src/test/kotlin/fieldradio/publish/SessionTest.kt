@@ -16,6 +16,7 @@ private class FakePublisher(var failures: Int = 0) : Publisher {
         if (failures > 0) { failures--; st.value = PublisherState.FAILED; throw RuntimeException("refused") }
         lastTarget = "$host:$port/$app/$streamName"; st.value = PublisherState.LIVE
     }
+    override fun setAudioConfig(asc: ByteArray) {}
     override fun send(frame: AacFrame) {}
     override suspend fun disconnect() { st.value = PublisherState.IDLE }
 }

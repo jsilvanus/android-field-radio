@@ -51,6 +51,8 @@ enum class PublisherState { IDLE, CONNECTING, LIVE, RECONNECTING, FAILED }
 
 interface Publisher {
     val state: Flow<PublisherState>
+    /** 2-byte AAC AudioSpecificConfig from the encoder; must be set before frames are sent. */
+    fun setAudioConfig(asc: ByteArray)
     suspend fun connect(host: String, port: Int, app: String, streamName: String)
     fun send(frame: AacFrame)
     suspend fun disconnect()

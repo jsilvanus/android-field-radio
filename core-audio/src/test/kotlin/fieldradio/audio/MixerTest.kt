@@ -95,3 +95,21 @@ class ResamplerTest {
         assertTrue(abs(total - 48000) <= 2, "got $total")
     }
 }
+
+class RingTest {
+    @Test fun fifoAndPartialRead() {
+        val r = FloatRing(8)
+        r.write(floatArrayOf(1f, 2f, 3f), 3)
+        val o = FloatArray(5)
+        assertEquals(3, r.read(o, 5))
+        assertEquals(listOf(1f, 2f, 3f), o.take(3))
+        assertEquals(0, r.read(o, 5))
+    }
+    @Test fun overflowDropsOldest() {
+        val r = FloatRing(4)
+        r.write(floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f), 6)
+        val o = FloatArray(4); r.read(o, 4)
+        assertEquals(listOf(3f, 4f, 5f, 6f), o.toList())
+        assertEquals(2L, r.overruns)
+    }
+}
