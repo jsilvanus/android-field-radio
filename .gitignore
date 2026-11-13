@@ -6,3 +6,15 @@ local.properties
 .idea/
 local.properties
 tmp/
+
+# Node.js (field-radio-control service)
+node_modules/
+package-lock.json
+*.log
+npm-debug.log*
+
+# IDE and OS
+.DS_Store
+*.swp
+*.swo
+*~

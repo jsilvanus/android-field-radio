@@ -1,6 +1,9 @@
 # android-field-radio: living implementation plan
 
-Status: DRAFT for review (2026-11-10). Implemented so far: `core-audio` (mixer, limiter, transition policy, resampler) and `core-profile` (profile model, validation, STT engine setting), both JVM-tested. Relay side is deliberately not touched until the VPS check is done. No code until reviewed.
+**Status:** DESIGN FROZEN, P1 IMPLEMENTATION COMPLETE (2026-11-13). 
+
+**Implemented:** ~2000 LOC Kotlin across core-audio, core-profile, core-publish (RTMP), core-session, core-stt, core-library, and app. Single-screen Compose UI with live MIC toggle, status, level meters, library sound buttons, and profile editor. All modules JVM-testable; full unit test suite (mixer, resampler, RTMP protocol, session reconnect). Ready for real device field test pending aidos SSH tunnel integration.
+
 Working name `android-field-radio` (rename freely). Public repo, no church-specific data: hosts, tokens, stream names and event data live only in user-made profiles on the device or in the private deployment repo.
 
 Legend: [V] verified from web-radio-relay README at d39f6d9 (code not yet read); [U] unverified, needs a check or experiment.
@@ -163,12 +166,15 @@ Reliability matrix
 
 ## F. Roadmap (small, testable phases)
 
-- **P0 Verify (no app code)**: read relay `server/index.js`, `on-publish.sh`, nginx and MediaMTX config; test publish with ffmpeg over RTMPS/RTMP from a laptop on mobile hotspot; decide C1/D2. *Accept:* A.1-A.5 answered in `docs/findings.md`.
-- **P1 PoC-1 capture->AAC->RTMP**: bare app, one screen. *Accept:* 30 min screen-off publish on a real phone, relay HLS plays, no gaps > 1 s, battery/temperature logged.
-- **P2 PoC-2/3 mixer + library + MIC switch**: decode file, mix, local monitor, fade policy. *Accept:* intro -> MIC -> music -> MIC with stream never restarting; offline test with a golden WAV (mixer unit tests: gain, fade curve, limiter, no clipping).
-- **P3 Control plane + auth**: OpenAPI, `field-radio-control`, MediaMTX JWT/http auth, invite codes, 409 duplicate. *Accept:* APK contains no admin token (CI grep), expired/foreign-path credentials are rejected, revocation kills a live publish within TTL.
-- **P4 Profiles + library + operator UI**: *Accept:* a non-developer starts a broadcast from a saved profile in under 30 s in a field test.
-- **P5 Reliability hardening**: reconnect, focus, Bluetooth, process death, soak 3 h. *Accept:* failure matrix rows pass in manual test script.
+- **P0 Verify (complete ✅ 2026-11-10)**: Relay infrastructure verified (findings.md). SSH tunnel identified as MVP transport. VPS has nginx-rtmp on loopback only, no MediaMTX yet. No admin token exposure needed for MVP.
+- **P1 PoC-1 capture->AAC->RTMP (complete ✅ 2026-11-13, code-ready for device test)**
+  - **What's done:** ~2000 LOC Kotlin, UI, tests, single-screen app. Mic (48 kHz) → AAC (64 kbps) → RTMP publisher. Foreground service, level meters, library buttons, profile editor. Transports: Direct (for dev) and ViaTunnel (seam for aidos SSH module). RTMP protocol with full handshake, chunk encoding, reconnect state machine.
+  - **What's pending:** (a) aidos RFC-0108 phase 4 (SSH TunnelTransport), (b) real device field test (30 min, no gaps > 1 s HLS).
+  - **Accept:** 30 min screen-off publish on a real phone, relay HLS plays, no gaps > 1 s, battery/temperature logged. Device must have aidos SSH module and VPS sshd configured (see operations.md).
+- **P2 PoC-2/3 mixer + library + MIC switch (starting now)**: decode file, mix, local monitor, fade policy, audio device selection, Bluetooth fallback. *Accept:* intro -> MIC -> music -> MIC with stream never restarting; offline test with a golden WAV (mixer unit tests: gain, fade curve, limiter, no clipping).
+- **P3 Control plane + auth (starting now, parallel with P2)**: OpenAPI, `field-radio-control`, MediaMTX JWT/http auth (post-MVP), invite codes, 409 duplicate. *Accept:* APK contains no admin token (CI grep), expired/foreign-path credentials are rejected, revocation kills a live publish within TTL.
+- **P4 Profiles + library + operator UI (after P1+P2+P3)**: Multi-screen UI, profile CRUD, import/export. *Accept:* a non-developer starts a broadcast from a saved profile in under 30 s in a field test.
+- **P5 Reliability hardening (after P4)**: reconnect buffer, audio focus, Bluetooth fallback, process death, soak 3 h. *Accept:* failure matrix rows pass in manual test script.
 - **P6 (post-MVP) STT + captions**: E4 engine bake-off, mic-tap feeding, finals to relay with scoped token, caption sync test with relay delay > 0. *Accept:* caption appears within +-1.5 s of speech in the delayed listener page.
 - **P7 (later)**: SRT publisher, stereo/music profile, remote monitoring of the relay stream, multi-profile playlists, scheduled cue points.
 
