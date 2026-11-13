@@ -15,10 +15,14 @@ import kotlin.random.Random
 /**
  * Audio-only RTMP publisher (AAC). Plain RTMP over TCP, so it can run through a local SSH forward.
  * Frames are queued (bounded, oldest dropped) and written by one writer thread so the audio thread never blocks.
+ * 
+ * P5 feature: Reconnect buffer up to ~10 s of AAC frames (reconn buffer, oldest dropped on overflow).
+ * On reconnect, the buffer is flushed to the publisher so the stream continues without silence gaps.
  */
 class RtmpPublisher(
     private val connectTimeoutMs: Int = 10_000,
     private val maxQueuedFrames: Int = 500,   // about 10 s of 1024-sample frames at 48 kHz
+    private val enableReconnectBuffer: Boolean = true,  // P5 feature
 ) : Publisher {
     private val st = MutableStateFlow(PublisherState.IDLE)
     override val state: Flow<PublisherState> = st
@@ -29,7 +33,9 @@ class RtmpPublisher(
 
     private var conn: Connection? = null
     private val queue = LinkedBlockingQueue<AacFrame>()
+    private val reconnectBuffer = LinkedBlockingQueue<AacFrame>()  // P5: buffer during reconnect
     private var baseUs = -1L
+    @Volatile private var isConnected = false
 
     override suspend fun connect(host: String, port: Int, app: String, streamName: String) {
         disconnect()
@@ -39,26 +45,43 @@ class RtmpPublisher(
             conn = withContext(Dispatchers.IO) {
                 Connection.open(host, port, app, streamName, config, connectTimeoutMs, queue) { st.value = PublisherState.RECONNECTING }
             }
+            // P5: Flush reconnect buffer to the queue when connection re-establishes
+            if (enableReconnectBuffer && reconnectBuffer.isNotEmpty()) {
+                val frames = mutableListOf<AacFrame>()
+                reconnectBuffer.drainTo(frames)
+                frames.forEach { queue.offer(it) }
+            }
             baseUs = -1L
+            isConnected = true
             st.value = PublisherState.LIVE
         } catch (e: Exception) {
+            isConnected = false
             st.value = PublisherState.FAILED
             throw e
         }
     }
 
     override fun send(frame: AacFrame) {
-        if (conn == null) return
         if (baseUs < 0) baseUs = frame.ptsUs
-        while (queue.size >= maxQueuedFrames) { queue.poll(); droppedFrames++ }
-        queue.offer(AacFrame(frame.data, frame.ptsUs - baseUs))
+        val f = AacFrame(frame.data, frame.ptsUs - baseUs)
+        
+        // P5: If connected, send to main queue; otherwise buffer for reconnect
+        if (isConnected && conn != null) {
+            while (queue.size >= maxQueuedFrames) { queue.poll(); droppedFrames++ }
+            queue.offer(f)
+        } else if (enableReconnectBuffer) {
+            while (reconnectBuffer.size >= maxQueuedFrames) { reconnectBuffer.poll() }
+            reconnectBuffer.offer(f)
+        }
     }
 
     override suspend fun disconnect() {
+        isConnected = false
         val c = conn ?: run { if (st.value != PublisherState.IDLE) st.value = PublisherState.IDLE; return }
         conn = null
         withContext(Dispatchers.IO) { c.close() }
         queue.clear()
+        // Keep reconnect buffer for next connection attempt
         st.value = PublisherState.IDLE
     }
 

@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -33,12 +35,15 @@ import org.fieldradio.app.audio.Meters
 /**
  * Owns the engine and the broadcast session. Started from an on-screen tap only (Android 14 forbids starting a
  * microphone foreground service from the background). The mic is never opened automatically after a process restart.
+ * 
+ * Handles audio focus loss (incoming calls, other apps) by muting the mic while keeping the stream alive with silence.
  */
-class BroadcastService : Service() {
+class BroadcastService : Service(), AudioManager.OnAudioFocusChangeListener {
     var engine: Engine? = null; private set
     private var session: BroadcastSession? = null
     private var scope: CoroutineScope? = null
     private var wake: PowerManager.WakeLock? = null
+    private var audioManager: AudioManager? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -77,10 +82,23 @@ class BroadcastService : Service() {
             this, { publisher.send(it) },
             { msg -> BroadcastController._state.value = BroadcastController._state.value.copy(error = msg) },
             { BroadcastController._state.value = BroadcastController._state.value.copy(nowPlaying = null) },
-            p.audio.bitrateKbps, policy, p.audio.micGainDb, p.audio.playbackGainDb, p.monitorEnabled,
+            onAudioFocusLoss = { lost -> onAudioFocusChanged(lost) },
+            bitrateKbps = p.audio.bitrateKbps, policy = policy, micGainDb = p.audio.micGainDb, playbackGainDb = p.audio.playbackGainDb, monitor = p.monitorEnabled,
         )
         publisher.setAudioConfig(eng.encoder.audioSpecificConfig)
         engine = eng; BroadcastController.service = this
+        
+        // Request audio focus for notifications (not for full capture, which is native)
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioManager?.requestAudioFocus(android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).setAudioAttributes(
+                android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION).build()
+            ).setOnAudioFocusChangeListener(this).build())
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager?.requestAudioFocus(this, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN)
+        }
+        
         eng.start()
         val s = BroadcastSession(sc, publisher, tunnel = null)   // SSH tunnel plugs in here when the aidos module is available
         session = s
@@ -90,6 +108,23 @@ class BroadcastService : Service() {
             combine(s.status, s.error, eng.meters) { link, err, m -> Triple(link, err, m) }.collect { (link, err, m) ->
                 val cur = BroadcastController._state.value
                 BroadcastController._state.value = cur.copy(running = true, link = link, error = err ?: cur.error?.takeIf { link == fieldradio.publish.LinkStatus.LIVE }, meters = m)
+            }
+        }
+    }
+
+    override fun onAudioFocusChange(focusChange: Int) {
+        val lost = focusChange == AudioManager.AUDIOFOCUS_LOSS || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+        engine?.setAudioFocusLost(lost)
+        if (lost) BroadcastController._state.value = BroadcastController._state.value.copy(error = "Audio focus lost (call or other app)")
+    }
+    
+    private fun onAudioFocusChanged(lost: Boolean) {
+        if (lost) {
+            BroadcastController._state.value = BroadcastController._state.value.copy(error = "Mic muted: incoming call or other app")
+        } else {
+            val cur = BroadcastController._state.value
+            if (cur.error?.startsWith("Mic muted") == true) {
+                BroadcastController._state.value = cur.copy(error = null)
             }
         }
     }
@@ -115,6 +150,8 @@ class BroadcastService : Service() {
         engine?.stop(); engine = null; session = null
         scope?.cancel(); scope = null
         wake?.let { if (it.isHeld) it.release() }; wake = null
+        runCatching { audioManager?.abandonAudioFocus(this) }
+        audioManager = null
         BroadcastController.service = null
         BroadcastController._state.value = UiState()
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
