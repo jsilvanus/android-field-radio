@@ -1,0 +1,273 @@
+openapi: 3.1.0
+info:
+  title: field-radio-control API
+  description: |
+    Control plane for android-field-radio broadcasts. 
+    Mints short-lived credentials for publish (direct RTMPS to MediaMTX)
+    and caption submission (scoped per-stream tokens).
+    
+    Auth: invite codes (event-scoped, pre-created by operator) or direct API key (admin only).
+    Deployed on the VPS alongside web-radio-relay.
+  version: 1.0.0
+  contact:
+    name: android-field-radio
+    url: https://github.com/jsilvanus/android-field-radio
+
+servers:
+  - url: https://api.example.church/v1/control
+    description: Production VPS control plane
+  - url: http://localhost:9100/v1/control
+    description: Development local
+
+components:
+  securitySchemes:
+    inviteCode:
+      type: apiKey
+      in: header
+      name: X-Invite-Code
+      description: Event-scoped invite code (pre-created, expiring, revocable)
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Admin API key (for operators only, not in APK)
+
+  schemas:
+    SessionCreateRequest:
+      type: object
+      properties:
+        profileHint:
+          type: string
+          description: Optional profile name or descriptor for logging/UI (trusted, not validated)
+      required: []
+
+    Session:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          pattern: '^[a-f0-9-]{36}$'
+          description: UUID v4 session identifier
+        streamName:
+          type: string
+          pattern: '^[a-z0-9_-]{1,32}$'
+          description: Relay stream name (relay broadcasts at /live/{streamName})
+        publishUrl:
+          type: string
+          format: uri
+          description: RTMPS connection string (e.g., rtmps://media.example.church/live)
+        publishCredential:
+          type: string
+          description: Per-path credential for MediaMTX auth (JWT or passphrase depending on MediaMTX config)
+        captionToken:
+          type: string
+          nullable: true
+          description: Optional scoped bearer token for POST /api/v1/streams/{name}/captions (post-MVP, null in P1)
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC expiry time (credential lifetime, typically 2-4 hours)
+        relay:
+          type: object
+          properties:
+            apiUrl:
+              type: string
+              format: uri
+              description: Relay API base URL for listener queries (public)
+            streamUrl:
+              type: string
+              format: uri
+              description: Listener HLS/stream URL (public)
+          required: [apiUrl]
+
+    SessionRefresh:
+      type: object
+      properties:
+        publishCredential:
+          type: string
+          description: Refreshed credential
+        expiresAt:
+          type: string
+          format: date-time
+        captionToken:
+          type: string
+          nullable: true
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          enum: [invalid_invite, invite_expired, invite_revoked, stream_name_taken, internal_error, unauthorized]
+        message:
+          type: string
+        details:
+          type: object
+          nullable: true
+      required: [code, message]
+
+paths:
+  /sessions:
+    post:
+      summary: Create a new broadcast session
+      description: |
+        Authenticate with an invite code (event-scoped) or admin key.
+        Mints a short-lived credential for publishing to one stream name.
+        Returns 409 if a session for that stream name already exists (duplicate-session prevention).
+      operationId: createSession
+      security:
+        - inviteCode: []
+        - adminKey: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid auth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Stream name already has an active session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+                example:
+                  code: stream_name_taken
+                  message: "Stream 'keskuskirkko' already in use (active session)"
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{sessionId}:
+    delete:
+      summary: End a broadcast session
+      description: |
+        Revokes credentials and signals the relay to stop the stream.
+        Idempotent: returns 204 even if the session was already ended.
+      operationId: deleteSession
+      security:
+        - inviteCode: []
+        - adminKey: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Session ended (or was already ended)
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sessions/{sessionId}/refresh:
+    post:
+      summary: Refresh a session credential (before expiry)
+      description: |
+        Extends the session lifetime and issues a new publishCredential (before the current one expires).
+        Used to keep a long-running broadcast alive across credential rotations.
+        Requires the same auth (invite code or admin key) as the original session creation.
+      operationId: refreshSession
+      security:
+        - inviteCode: []
+        - adminKey: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Credential refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRefresh'
+        '401':
+          description: Unauthorized or credential already expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /status:
+    get:
+      summary: Health and configuration check
+      description: |
+        Public endpoint. Returns server status and protocol hints (MediaMTX URL, relay URL, etc.).
+        No auth required.
+      operationId: getStatus
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  version:
+                    type: string
+                  mediaUrl:
+                    type: string
+                    format: uri
+                    description: MediaMTX RTMPS public endpoint
+                  relayUrl:
+                    type: string
+                    format: uri
+                    description: web-radio-relay API base URL
+                  credentialTtlSeconds:
+                    type: integer
+                    description: Typical credential lifetime
+                required: [status]
+
+security:
+  - inviteCode: []
+  - adminKey: []

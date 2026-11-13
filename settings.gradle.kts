@@ -12,4 +12,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "android-field-radio"
-include(":core-audio", ":core-profile", ":core-publish", ":app")
+include(":core-audio", ":core-profile", ":core-publish", ":core-stt", ":core-session", ":core-library", ":app")
